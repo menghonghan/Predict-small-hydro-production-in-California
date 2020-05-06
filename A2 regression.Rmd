@@ -1,0 +1,283 @@
+---
+title: "A2: Regression"
+author: "Credibles: Menghong Han, Peihan Tian, Yanghe Liu, Laurence Finch,"
+date: "1 March 2020"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+# Part 1
+
+# Import data
+```{r, warning=FALSE, message=FALSE}
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(GGally)
+
+set.seed(1)
+data=read.csv('data.csv')
+```
+
+# Transform continous target variable SMALL.HYDRO into categorical variable with 3 levels according to K-means result
+```{r}
+data<-data[,-c(1,2)]
+data$SMALL.HYDRO[data$c>402]=2
+data$SMALL.HYDRO[data$SMALL.HYDRO<238]=0
+data$SMALL.HYDRO[data$SMALL.HYDRO<403&data$SMALL.HYDRO>237]=1
+```
+
+# Boxplot for important variables
+```{r}
+# Box & whisker plots for relevant and important variables
+boxplot(data)+title("Box & whisker plots for relevant and important variables")
+```
+
+
+# Calculate descriptive statistics
+```{r}
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+summary(data$SMALL.HYDRO)
+getmode(data$SMALL.HYDRO)
+sd(data$SMALL.HYDRO)
+var(data$SMALL.HYDRO)
+```
+
+
+# Part 2 Predictive Modeling: Multiple Regression
+First, after loading our required libraries, we read in the data and divide it into training (80% of dataset) and validation sets.
+
+Small hydro energy production in California is defined as energy production from water related sources, at a facility with a capacity of 30MW or less. More information about small hydro can be found [here](https://www.hydro.org/policy/technology/small-hydro/).
+
+We are interested in how the amount of small hydro energy production can be predicted using the other type of renewable energy and some time and month indicator variable.
+
+```{r, warning=FALSE, message=FALSE}
+library(forecast)
+library(MASS)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(tidyr)
+```
+
+```{r}
+set.seed(1)
+dataset=read.csv('data.csv')
+head(dataset)
+selected.var=c(3:11) # select the meaningful variables from dataset
+length_dataset=dim(dataset)[1]*0.8 
+train.index=sample(c(1:length_dataset),35923) # first 80% of dataset for training, rest for validation
+train.df=dataset[train.index,selected.var] 
+valid.df=dataset[-train.index,selected.var]
+```
+
+We then fit a linear regression model, regressing the target variable, SMALL.HYDRO on all other variables. 
+
+We used a forward stepwise fit to train our model, using the AIC method BECAUSE...
+Then, we make predictions for the validation set. 
+
+```{r}
+small.hydro.lm=lm(SMALL.HYDRO~.,data = train.df)
+
+step.model <- stepAIC(small.hydro.lm,direction = 'forward',trace = FALSE)
+step.model.pred=predict(step.model,valid.df)                    
+
+```
+### Checking Regression Assumptions
+Before interpreting the model and its predictions, we want to first check if the classical regression assumptions are satisfied, to enable us to conduct valid inference and prediction.
+
+To check that the residuals are normally distributed, we plot a histogram of the residuals, and a Q-Q plot of the residuals. The plots below show that the residuals are approximately normally distributed.
+
+```{r}
+all.residuals=valid.df$SMALL.HYDRO-step.model.pred
+hist(all.residuals,breaks = 25)
+
+small.hydro.stdres=rstandard(step.model)
+qqnorm(small.hydro.stdres)
+qqline(small.hydro.stdres)
+```
+
+To check the linearity assumption, we plot a random sample of the residuals against the fitted values. The plot below shows that the the model is linear in parameters. The residuals do look randomly distributed, so we have confidence in the linearity assumption. 
+
+```{r}
+random.index=sample(c(1:length(step.model.pred)),100)
+plot(step.model.pred[random.index],all.residuals[random.index]) 
+```
+
+So the regression assumptions seem to hold, meaning we can be confident in the validity of the regression. 
+
+### Evaluating First Model
+```{r}
+summary(step.model)
+```
+We find an **adjusted R-squared of 0.1889**. 
+
+```{r}
+accuracy(step.model.pred,valid.df$SMALL.HYDRO)
+```
+
+We get an **RMSE of 116.44**. Given this low adjusted R-squared and high RMSE, we feel we can do better by including some polynomial terms (quadratics and cubics) for the various types of renewable energy and some indicator variables for time and year. 
+
+## Improving the model
+
+We proceed by wiping our environment and building the model and parameters from the ground up for clarity. 
+
+```{r}
+rm(list=ls()); gc() # wipes environment
+library(forecast)
+library(MASS)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(tidyr)
+
+set.seed(1)
+dataset=read.csv('data.csv')
+```
+Now we create the polynomial and interaction terms for each type of energy production, before adding indicator variables for time and month.
+
+```{r}
+# adding cubic, quadratic
+for (i in c(3,4,5,8,9,10)){
+  dataset[,paste(names(dataset[i]),'^2',sep='_')]=dataset[i]*dataset[i]
+  dataset[,paste(names(dataset[i]),'^3',sep='_')]=dataset[i]*dataset[i]*dataset[i]
+}
+
+# create dummies for hour
+for (i in (1:23)){
+  dataset[,paste(names(dataset[6]),i,sep='_')]=as.numeric(dataset$Hour==i)
+}
+
+# create dummies for month
+for (i in (1:11)){
+  dataset[,paste(names(dataset[11]),i,sep='_')]=as.numeric(dataset$month==i)
+}
+
+dataset=dataset[c(1,2,6,7,11,3,4,5,8,9,10,12:ncol(dataset))]
+
+#add interaction terms
+for (i in 6: 11 ) {
+  for (j in (i+1) : 11 ) {
+    if((i+1)>11){break()}
+    dataset[,paste(names(dataset)[i],":",names(dataset)[j],sep="")] <- dataset[i] * dataset[j]
+    dataset[,paste(names(dataset)[i],":",names(dataset)[j],sep="")] <- dataset[i] * dataset[j]
+  }
+}
+
+#remove unnecessary columns generated
+dataset$month=NULL
+dataset$Hour =NULL
+dataset$`WIND.TOTAL_^3`=NULL
+
+# select relevant variables
+selected.var=c(3:dim(dataset)[2])
+```
+### Model Training and Assumption Checking
+
+Following the same steps as above, we partition the data, fit a model on the training set and use this model to train a stepwise model using a forward, AIC method.
+
+
+We then make the same diagnostic plots as earlier, to check the regression assumptions.
+
+```{r}
+
+#we divide the dataset into training and testing parts
+length_dataset=dim(dataset)[1]*0.8
+train.index=sample(c(1:length_dataset),35923)
+train.df=dataset[train.index,selected.var]
+valid.df=dataset[-train.index,selected.var]
+
+# fit model on training data
+small.hydro.lm=lm(SMALL.HYDRO~.,data = train.df)
+
+# Train the model
+step.model <- stepAIC(small.hydro.lm,direction = 'forward',trace = FALSE)
+step.model.pred=predict(step.model,valid.df)                    
+
+# residual plot to test normality of the residuals
+all.residuals=valid.df$SMALL.HYDRO-step.model.pred
+hist(all.residuals,breaks = 25)
+
+small.hydro.stdres=rstandard(step.model)
+qqnorm(small.hydro.stdres)
+qqline(small.hydro.stdres)
+
+# residuals against fitted values, to test for the linearity of the model
+random.index=sample(c(1:length(step.model.pred)),100)
+plot(step.model.pred[random.index],all.residuals[random.index]) 
+```
+
+As before, we find that the residuals appear normally distributed and the linearity assumption holds. Here our QQ plot follows the line much better than before, meaning we can be even more confident in the normality assumption. We can therefore be confident in using the model for predictions.
+
+
+
+
+### Model Evaluation and Interpretation
+```{r}
+summary(step.model)
+```
+
+### remove outliers
+```{r}
+#we divide the dataset into training and testing parts
+set.seed(1)
+dataset=read.csv('data.csv')
+dataset <- dataset[-c(30896, 28678,811,890,271,31345,30895,6835,4292,27890,170,27170),]
+length_dataset=dim(dataset)[1]*0.8
+train.index=sample(c(1:length_dataset),35913)
+# select relevant variables
+selected.var=c(3:dim(dataset)[2])
+train.df=dataset[train.index,selected.var]
+valid.df=dataset[-train.index,selected.var]
+
+# fit model on training data
+small.hydro.lm=lm(SMALL.HYDRO~.,data = train.df)
+
+# Train the model
+step.model <- stepAIC(small.hydro.lm,direction = 'forward',trace = FALSE)
+par(mfrow=c(2,2))
+plot(step.model)        
+
+```
+
+Now we get an **adjusted R-squared of 0.5087**. This is much higher than previously, although still not that high. Thinking about the model however, this is not very surprising. There is no clear, direct causal path between small-hydro power production and other energy sources. For example, solar power will depend primarily on the amount of sunshine, whereas hydro power shouldn't be very correlated with the amount of sunshine. However some some relationship between small-hydro power and our predictions is plausible. For example, if one renewable energy source is being particularly productive, other sources could be neglected to focus on the more productive source, or alternatively, the other sources of energy could also be productive at the same time, if environmental conditions are favourable to the production of both sources of energy.
+
+Looking at specific parameter estimates, we see that there is a strong positive relationship between biogas production and small-hydro production (coefficient of 47.48 on BIOGAS, meaning an increase in 1 unit of biogas production predicts an increase of 47.48 units of small hydro production, not considering the small polynomial terms), although this effect gets slighltly weaker at higher levels of biogas production, seen by the negative coefficient on the BIOGAS_^2 coefficient. 
+
+SMALL.HYDRO is also predicted increasing with BIOMASS energy production (coefficient of 1.91, meaning an increase of one unit of biomass energy predicts a 1.91 unit increase in small hydro production, not including the small polynomial terms) and decreasing in GEOTHERMAL (coefficient of -5.53, meaning an increase of one unit of geothermal energy predicts a decrease of 5.53 units of small hydro, not considering the small polynomial terms). The coefficients on SOLAR.PV, SOLAR.THERMAL and WIND.TOTAL are small, so are not very correlated with small hydro power production. (SOLAR.PV and SOLAR.THERMAL coefficients are not statistically significant, possibly because of their high collinearity)
+
+The coefficients on the polynomial terms are generally negative, meaning that small hydro power is predicted to be increasing slighly less at higher levels of alternative renewable energy production, given the generally positive relationships between small hydro and alternative power sources. The coefficient on BIOGAS_^2 is -0.2616 meaning that for an increase of one unit of biogas production, small hydro production is predicted to be 0.2616 x biogas energy production level, not including the standalone effect of biogas production. Similarly, the coefficient on BIOMAS_^2 is -0.04421, meaning that a one unit increase in biomass energy production predicts a 0.04421 x biomas energy production level in small hydro, not considering the standalone effect of biomas energy production on small hydro. These findings are in agreement with our intuition that higher energy production from other sources could take focus away from small hydro, even if environmental conditions or energy demand mean that small hydro production is higher when alternative energy production is higher. 
+
+Perhaps most interesting and most interpretable is the coefficients on the time and month indicator variables. For time, we use midnight (hour 24) as the omitted reference hour. In the early hours, before 7am, small.hydro energy production is below the midnight reference (negative coefficients: coefficient on hour 2 of -29.14 meaning small hydro energy production is 29.14 units per hour less at 2am than at midnight for example). After 7am production is above that of midnight (positive coefficients: the coefficient of 116.4 on hour 12, being the peak production hour, meaning at 12pm hourly small hydro production is 116.4 units higher than at midnight), with the highest production between 10am and 3pm. 
+
+For months, December (month 12) is the omitted reference month. Small hydro energy production is predicted lower than December in the months of September, October and November, and higher in all other months.. 
+
+The interaction terms are very small and vary in sign with the largest being BIOGASS:BIOMASS at 0.0061. These coefficients are hard to interpret and possible not as useful as the above findings, so we include the interaction terms mainly to increase the accuracy of the model 
+
+Nearly all of the coefficients are highly statistically significant, with very small p-values. Given this and the satisfaction of the regression assumptions, we are confident that our model can be used to predict small hydro energy production.
+
+
+
+```{r}
+accuracy(step.model.pred,valid.df$SMALL.HYDRO)
+```
+With our improved model, we get a much better **RMSE of 89.948**. This increase in accuracy is largely the result of including the time and month indicator variables. Although the new polynomial terms are mostly statistically significant, and are plausible as argued above, the larger coefficients on the time and month indicator variables are the main improvement in our model.
+
+
+## Conclusion and Result Insights
+The ability to predict small hydro energy production using alternative energy sources and time and month categories is useful for all who care about specific sources of energy production for whatever reason. For policymakers and energy planners, it is useful to be able to estimate a time/year dependence of small hydro energy production, to be able to plan for energy demand or supply shocks. For example, in the case of a particularly cloudy summer where solar energy supply drops, policy makers could look to our model to estimate knock-on or indirect effects to small hydro energy production, that might not be immediately obvious otherwise. 
+
+Small hydro energy production is very environmentally friendly, producing very little if any carbon emmissions. We believe that our model is most useful for obtaining a better understanding of the renewable energy production landscape, for identifying complementary and noncomplementary energy sources to small hydro and finally for identifying and forecasting time and month specific production. 
+
+
+
+
+

@@ -1,0 +1,503 @@
+# Introduction
+
+This report follows our previous A3: Classification report concerning the same data and economic issue of renewable energy production by energy type in California. 
+
+We will proceed by using two different clustering methods to characterize our data: K-means and Hierarchical clustering, before evaluating the validity of the clusters’ ability to represent the structure of our data. As we will explain in the report conclusion, clustering energy production, although complex and technical, can direct analysis and yield significant insights for energy planners and production companies. We will then add our formed clusters to our previous logistic regression (of A3 report) and find that adding the clusters does improve classification model’s accuracy, suggesting a validity to the clusters. 
+
+
+# Part 1: Clustering
+
+## K-means Clustering 
+
+### Import data
+```{r, warning=FALSE, message=FALSE}
+# libraries and load data
+
+rm(list=ls()); gc()
+library(forecast)
+library(MASS)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(tidyr)
+library(cluster)
+library(factoextra)
+library(purrr)
+library(digest)
+library(GGally)
+library(plotly)
+set.seed(1)
+
+ dataset=read.csv('data.csv')
+#dataset=read.csv('/Users/laurencefinch/Documents/Documents\ –\ Laurence’s\ MacBook\ Air/Brandeis\ Academics/SPRING20/Big\ data\ 2/A4\ Clusters/data.csv')
+head(dataset)
+
+```
+
+```{r} 
+#adding cubic, quadratic, and dummy variables
+for (i in (1:23)){
+  dataset[,paste(names(dataset[6]),i,sep='_')]=as.numeric(dataset$Hour==i)
+  
+}
+
+for (i in (1:11)){
+  dataset[,paste(names(dataset[11]),i,sep='_')]=as.numeric(dataset$month==i)
+  
+}
+
+# remove irrelevant variables
+dataset$Hour=NULL
+dataset$month=NULL
+dataset$X=NULL
+dataset$TIMESTAMP=NULL
+```
+
+The most important step in K-means algorithm is to choose the right K. To fulfill this goal, we compute clustering algorithms for different values of k. In our case, we can vary the k from 1 to 15.
+
+For each k, we have to calculate the total within-cluster sum of squares(wss) and plot the curve of wss according to the number of clusters. 
+
+
+```{r}
+selected.var=c(1:7)
+
+# normalize input variables
+dataset[selected.var] <- sapply(dataset[selected.var], scale)
+
+# function to compute total within-cluster sum of square 
+wss <- function(k) {
+  kmeans(dataset, k, nstart = 10 )$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values, wss)
+
+plot(k.values, wss_values,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+```
+
+The location of a bend in the plot is generally considered as an indicator of the appropriate number of clusters. 
+
+The result suggests that 5 is the optimal number of clusters as it appears to be the bend in the knee. Then we will use 5 clusters for further analysis.
+
+For comparison, we have a BSS/TSS value of 35.1% and 39.1% using 4 and 5 clusters respectively. Thus, we can use 5 clusters for further analysis.
+
+#### Evaluating the clusters
+We may use the silhouette coefficient (silhouette width) to evaluate the goodness of our clustering.
+
+The silhouette coefficient is calculated as follows:
+For each observation i, it calculates the average dissimilarity between i and all the other points within the same cluster which i belongs. Let’s call this average dissimilarity “Di”.
+
+Now we do the same dissimilarity calculation between i and all the other clusters and get the lowest value among them. That is, we find the dissimilarity between i and the cluster that is closest to i right after its own cluster. Let’s call that value “Ci”
+
+The silhouette (Si) width is the difference between Ci and Di (Ci — Di) divided by the greatest of those two values (max(Di, Ci)).
+Si = (Ci — Di) / max(Di, Ci)
+
+So, the interpretation of the silhouette width is the following:
+Si > 0 means that the observation is well clustered. The closest it is to 1, the best it is clustered.
+Si < 0 means that the observation was placed in the wrong cluster.
+Si = 0 means that the observation is between two clusters.
+
+The silhouette plot below gives us evidence that our clustering using four groups is good because there’s no negative silhouette width and most of the values are bigger than 0.5.
+
+```{r}
+random.index=sample(c(1:dim(dataset)[1]),200)
+
+visualized_data=dataset[random.index,]
+k5 <- kmeans(visualized_data, centers = 5, nstart = 25)
+
+sil=silhouette(k5$cluster,dist(visualized_data))
+fviz_silhouette(sil)
+
+```
+
+
+#### K-means Clustering Interpretation 
+For better understanding of  each cluster and their corresponding meaning, we should build a dendrogram and an interactive plot. 
+
+In order to make our plot attractive and understandable, we have to randomly pick 200 observations among the whole dataset, which has overall 50000 rows. 
+
+
+```{r}
+result <- dist(visualized_data, method = "euclidean")
+hc1=hclust(result,method = "ward.D2")
+fviz_dend(hc1, k = 5, 
+          cex = 0.5, 
+          k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07",'black'),
+          color_labels_by_k = TRUE, 
+          rect = TRUE          
+)
+
+real_k5=kmeans(dataset,centers = 5, nstart = 25)
+```
+Here we see that the heights difference between clusters is generally quite large, meaning that our generated clusters are doing a good job at showing the structure of our data.
+
+```{r}
+set.seed(1)
+random.index=sample(c(1:dim(dataset)[1]),100)
+dataset$clusters_kmeans=as.factor(real_k5$cluster)
+visualized_data_2=dataset[random.index,]
+p <- ggparcoord(data = visualized_data_2, columns = c(1:7), groupColumn = "clusters_kmeans", scale = "std")
+ggplotly(p)
+```
+From the interactive plot, we see that cluster 5 has a relatively high solar power and thermal; cluster 2 has a higher geothermal and relatively low small hydro; cluster 1 has a high small hydro; cluster 4 has a higher biomass; cluster 3 also has a high wind total and and a low geothermal. 
+
+These are the characteristics of each cluster. In general, we can conclude that each cluster is the combination of the characteristics of different energy types. 
+
+# Part 2: Logistic Regression adding HierCluster & KMeansCluster variables
+```{r, warning=FALSE, message=FALSE}
+# libraries 
+rm(list=ls()); gc()
+
+set.seed(1)
+
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(GGally)
+
+library(tidyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(e1071)
+library(factoextra)
+library(randomForest)
+library(pROC)
+library(factoextra)
+```
+## Import data
+```{r}
+k_means_cluster <- read.csv("k_means_cluster.csv")
+newdataset_final <- read.csv("newdataset_final.csv")
+
+#k_means_cluster <- read.csv('/Users/laurencefinch/Documents/Documents\ –\ Laurence’s\ MacBook\ Air/Brandeis\ Academics/SPRING20/Big\ data\ 2/A4\ Clusters/k_means_cluster.csv')
+
+#newdataset_final <- read.csv('/Users/laurencefinch/Documents/Documents\ –\ Laurence’s\ MacBook\ Air/Brandeis\ Academics/SPRING20/Big\ data\ 2/A4\ Clusters/newdataset_final.csv')
+
+
+clusterdata<-cbind(newdataset_final,KMeansCluster=k_means_cluster$clusters_kmeans)
+clusterdata<-clusterdata[-1]
+```
+
+## Variable Description
+First of all, we choose the relevant and important variables based on the distribution and boxplot from our last report as well as the economical and environmental significance, they are: "BIOGAS", "BIOMASS", "GEOTHERMAL", "SMALL.HYDRO", "SOLAR.PV", "SOLAR.THERMAL", "WIND.TOTAL", representing power production from various power sources (measured in megawatts). In addition, because seasonality has a large influence on  energy generation, we convert the variable “TIMESTAMP” into two categorical variables “Hour” and “Month”.
+
+In order to carry out the classification analysis, we transform our former target variable "SMALL.HYDRO" which is continuous into a categorical variable. In order to get appropriate segment thresholds, we used an unsupervised K-means clustering method to find the reasonable k and labeled "SMALL.HYDRO" data points accordingly. 
+
+## Justify target variable
+From a statistical perspective, we can see the distribution of  “SMALL.HYDRO” is close to normal distribution and the absolute value of correlation coefficients  between “SMALL.HYDRO” and other variables are larger relatively, which we can see clearly from the slopes although all linear relationships are not that obvious.
+
+From an policy perspective, as a leader in renewable energy, California has pledged to use only clean sources for electricity, including wind and solar power by 2045, however, one hurdle is energy storage, while small hydro may help the state reach its goal of zero emissions by providing the solution “pumped storage,” which uses water in reservoirs at different elevations to smooth the fluctuations of intermittent power from the wind and sun, and makes electricity available when it is needed. Moreover, spinning a turbine using water offers many benefits beyond simply producing electricity. It also offers a tremendous amount of operational flexibility and rapid start/shutdown capabilities.Therefore, it’s meaningful to figure out how other energys interact with the production of small hydro which can be a great measurement to evaluate the overall effectiveness of renewable energy.
+
+From an economic and environmental perspective, due to the advantage illustrated above, California planned to build more hydro plants, however, many professionals questioned the efficiency of hydroelectric especially small hydro, at the meanwhile, some people are worrying about the environmental disruption caused by building new plants, climate advocates say, this would reduce the need to build new solar and wind farms between now and 2030 and as a result, more gas plants would continue to operate, spewing planet-warming pollution into the atmosphere. Therefore, it’s urgent to evaluate the effectiveness of small hydro itself to compare with the other renewable energy which would be extremely helpful for economic and environmental decisions.
+
+In general, we chose small hydro as our target variable, after statistical, policy, economic and environmental considerations.
+
+
+
+## Transform target variable "SMALL.HYDRO" into categorical variable
+```{r}
+
+km_result=kmeans(clusterdata$SMALL.HYDRO,3)
+print(km_result$centers)
+
+clusterdata$cut=km_result$cluster
+clusterdata%>%group_by(cut)%>%summarize(mean_size=max(SMALL.HYDRO,na.rm = TRUE))
+
+clusterdata$target_variable=cut(clusterdata$SMALL.HYDRO,breaks = c(0,236,402,678),labels = c('low','medium','high'))
+
+clusterdata$SMALL.HYDRO=NULL
+clusterdata$cut=NULL
+clusterdata$SOLAR.PV_.3=NULL
+
+selected.var=c(4:dim(clusterdata)[2])
+dataset=clusterdata[complete.cases(clusterdata$target_variable),]
+```
+
+# Boxplot & histgram for important variables
+```{r}
+# Box & whisker plots for relevant and important variables
+
+variable<-dataset[c(1:6,41,42)]
+# all variables
+boxplot(variable)
+```
+From the  plot, we can see that all variables have few outliers except for "SOLAR.PV", which shows a very large right deviation. We found that data highly concentrated on the frequency of 0 and shows positive skewness. However, this situation is reasonable since "SOLAR.PV" is Solar Photovoltaic which works only when the sun rises. Then, from the box chat of "SOLAR.PV" we can see the outliers show a large right deviation. Although Solar Photovoltaic works relatively fewer hours a day, it generates much more energy than others in a short period of time. Therefore, the large number of outliers would not destroy the data quality of  "SOLAR.PV” and we should deal with the outliers later under the context of the classification model.
+
+
+```{r}
+variable<-variable[c(7:8)]
+# cluster labels
+boxplot(variable)
+```
+
+
+```{r}
+# Distribution of Cluster Labels
+hist(variable$HierCluster,xlab = "HierCluster",col = "lightblue",main="Distribution of HierCluster Label")
+hist(variable$KMeansCluster,xlab = "KMeansCluster",col = "lightyellow",main="Distribution of KMeansCluster Label")
+
+```
+From the frequency  plots of the two cluster labels, we can clearly see that the distribution of the two cluster labels are different and the KMeansCluster label have relatively balanced distribution.
+
+
+# Calculate descriptive statistics
+Then we calculate the minimum, maximum, and average (mean, median, mode) and standard deviation and variance of important variables.
+```{r}
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+summary(dataset$KMeansCluster)
+getmode(dataset$KMeansCluster)
+sd(dataset$KMeansCluster)
+var(dataset$KMeansCluster)
+```
+
+# Scatterplot & correlations
+
+To figure out potentially linear or curvilinear relationships among variables, we create scatter plots as follows. Since there are too many data points, the scatterplots are hard to read, therefore, we randomly selected 100 variables to find clear patterns.
+```{r}
+
+
+# sampling 100 rows from dataset to get clear scatterplot
+#length_data=dim(clusterdata)[1]
+index<-sample(c(1:44902),100)
+selected=c(1:7,42,43) # select the meaningful variables from dataset
+dataplot=clusterdata[index,selected] 
+
+ 
+# correlations 
+
+ggpairs(dataplot,lower=list(continuous=wrap("smooth", colour="lightblue")))
+```
+From the correlation plots, the two new variables are highly correlated to other variables which indicates those two may be helpful predictors and we will test their performance in the model later.
+
+# Transform cluster variables into dummy variables
+```{r}
+dataset$HierCluster<-as.factor(dataset$HierCluster)
+dataset$KMeansCluster<-as.factor(dataset$KMeansCluster)
+dummyhie <- model.matrix(~HierCluster, dataset)
+dummykm <- model.matrix(~KMeansCluster, dataset)
+dataset<-dataset[c(1:40,43)]
+dataset<-cbind(dataset,dummyhie ,dummykm)
+dataset<-dataset[c(1:41,43:46,48:51)]
+
+```
+
+
+# divide the dataset into training and testing parts
+```{r}
+length_dataset=dim(dataset)[1]*0.8
+train.index=sample(c(1:length_dataset),35921)
+train.df=dataset[train.index,]
+valid.df=dataset[-train.index,]
+
+```
+
+#  Logistic Regression
+
+Given that our target is ordinal categorical variable and glm function cannot deal with it, we built our model with multinom function in the ‘nnet’ package. In this report, we set the ‘medium’ as the reference  and we achieved this by the ‘revel’ function. We built a logistic regression and then checked the significance of each variable.
+In A3: Classification, our logistic model has an accuracy rate of 59.55% in the training set and 32.48% in the testing set, which suffers from overfitting problems. In order to fix this problem, this time we remove several features including the cubic, quadratic and interaction terms.
+
+We built a new logistic regression and then checked the significance of each variable.
+
+```{r}
+library(nnet)
+library(caret)
+train.df$target_variable=relevel(train.df$target_variable, ref = "medium")
+multinom.fit=multinom(target_variable~.-1,data = train.df)
+summary(multinom.fit)
+exp(coef(multinom.fit))
+probability.table=fitted(multinom.fit)
+```
+ 
+From the above results, we get the coefficients, p-value of target variable low and high. We can see that all the variables are significant at the 5% level.
+
+For the coefficients, we can see that the signal of  HierCluster and KmeansCluster oefficients are opposite in low and high level and their absolute value are similar in the two levels, and they are relatively higher than other variables.
+
+The coefficients  month-4 to month-7, hour-9, hour-12 to 23 all are negatively correlated with the small hydrogen’s low level. Correspondingly, the coefficients of month-3 to month-6, hour-18 to hour-22 all are positively correlated with the small hydrogen’s high level, which is reasonable that in early hours and in winter the temperature is low and weather is cold, the production of small hydros is more likely to be in the low class, while temperature is high and weather is warm, it is more likely to be in the high class.
+
+```{r}
+#training set
+train.predict=predict(multinom.fit,newdata = train.df,'class')
+ctable=table(train.df$target_variable,train.predict)
+round((sum(diag(ctable))/sum(ctable))*100,2)
+```
+
+```{r}
+#testing set
+test_predict=predict(multinom.fit,newdata = valid.df,'class')
+ctable=table(valid.df$target_variable,test_predict)
+round((sum(diag(ctable))/sum(ctable))*100,2)
+```
+
+```{r}
+#find p value and z score
+output=summary(multinom.fit)
+z=output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2 # we are using two-tailed z test
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+
+#low
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+
+#high
+Pclass3 <- rbind(output$coefficients[2,],output$standard.errors[2,],z[2,],p[2,])
+rownames(Pclass3) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass3)
+```
+
+
+# Regularization
+However, the overfitting problems still exist. We have already removed many cubic, quadratic and interaction features, therefore, the only other way is to try regularization.
+We used ridge and lasso regularisation using glmnet package and got the error as a function of lambda (select lambda that minimises error) of both methods.
+
+
+
+```{r}
+
+#load required library
+library(glmnet)
+clusterdata<-cbind(newdataset_final,KMeansCluster=k_means_cluster$clusters_kmeans)
+clusterdata<-clusterdata[-1]
+km_result=kmeans(clusterdata$SMALL.HYDRO,3)
+print(km_result$centers)
+
+clusterdata$cut=km_result$cluster
+clusterdata%>%group_by(cut)%>%summarize(mean_size=max(SMALL.HYDRO,na.rm = TRUE))
+
+clusterdata$target_variable=cut(clusterdata$SMALL.HYDRO,breaks = c(0,236,402,678),labels = c('0','1','2'))
+
+clusterdata$SMALL.HYDRO=NULL
+clusterdata$cut=NULL
+clusterdata$SOLAR.PV_.3=NULL
+
+selected.var=c(4:dim(clusterdata)[2])
+dataset=clusterdata[complete.cases(clusterdata$target_variable),]
+
+# Transform cluster variables into dummy variables
+
+dataset$HierCluster<-as.factor(dataset$HierCluster)
+dataset$KMeansCluster<-as.factor(dataset$KMeansCluster)
+dummyhie <- model.matrix(~HierCluster, dataset)
+dummykm <- model.matrix(~KMeansCluster, dataset)
+dataset<-dataset[c(1:40,43)]
+dataset<-cbind(dataset,dummyhie ,dummykm)
+dataset<-dataset[c(1:41,43:46,48:51)]
+
+
+length_dataset=dim(dataset)[1]*0.8
+train.index=sample(c(1:length_dataset),35921)
+train.df=dataset[train.index,]
+valid.df=dataset[-train.index,]
+
+```
+
+
+
+
+
+```{r}
+
+### ridge
+#convert training data to matrix format
+
+train.x = as.matrix(train.df[c(1:40,42:49)])
+train.y = train.df[41]
+train.y<- as.numeric(train.df$target_variable)
+valid.x = as.matrix(valid.df[c(1:40,42:49)])
+valid.y = valid.df[41]
+valid.y<- as.numeric(valid.df$target_variable)
+
+#perform grid search to find optimal value of lambda
+#family= binomial => logistic regression, alpha=1 => lasso
+# check docs to explore other type.measure options
+
+r1 <- glmnet(train.x,train.y,family = "multinomial",alpha = 0)
+plot(r1)
+```
+
+```
+```{r}
+r1.cv <- cv.glmnet(train.x,train.y,family = "multinomial",alpha = 0,nfolds = 10)
+plot(r1.cv)
+```
+
+```{r}
+# lasso
+r2 <- glmnet(train.x,train.y,family = "multinomial",alpha = 1)
+plot(r2)
+
+```
+
+```{r}
+r2.cv <- cv.glmnet(train.x,train.y,family = "multinomial",alpha = 1,nfolds = 10)
+plot(r2.cv)
+```
+
+```{r}
+r2.cv$lambda.min
+r2.cv$lambda.1se
+```
+
+```{r}
+# get the coefficients of lasso lambda.1se
+r2.1se <- glmnet(train.x,train.y, family = "multinomial", alpha = 1, lambda = r2.cv$lambda.1se)
+r2.min_coef <- coef(r2.1se)
+print(r2.min_coef)
+#r2.min_coef[which(r2.min_coef != 0)]
+#rownames(r2.min_coef)[which(r2.min_coef != 0)]
+```
+
+```{r}
+# evaluation, chosing lambda.1se：largest value of lambda such that error is within 1 standard error of the minimum.
+
+# training data
+lasso.pred <- predict(r2, s = r2.cv$lambda.1se, newx = train.x,type = "class")
+ridge.pred <- predict(r1, s = r1.cv$lambda.1se, newx = train.x,type = "class")
+# accuracy
+(length(which(lasso.pred==train.y)==TRUE))/length(train.y)*100
+(length(which(ridge.pred==train.y)==TRUE))/length(train.y)*100
+
+```
+
+```{r}
+# validation data
+
+lasso.pred <- predict(r2, s = r2.cv$lambda.1se, newx = valid.x,type = "class")
+ridge.pred <- predict(r1, s = r1.cv$lambda.1se, newx = valid.x,type = "class")
+# accuracy
+(length(which(lasso.pred==valid.y)==TRUE))/length(valid.y)*100
+(length(which(ridge.pred==valid.y)==TRUE))/length(valid.y)*100
+
+```
+The plot shows that the log of the optimal value of lambda ( the one that minimises the root mean square error)  for ridge is approximately -4 and is around -6 for LASSO. In the present context, this means a model with the smallest number of coefficients that also gives a good accuracy and we used the cv.glmnet function to find the value of lambda that gives the simplest model but also lies within one standard error of the optimal value of lambda. This value of lambda (lambda.1se) is what we’ll use in the rest of the computation.
+
+Finally we got the accuracy after ridge and LASSO regularization, from the table above we can see the accuracy for both training and testing set increased especially for the testing ones to approximately 62.44%. Now the overfitting problem seems to be solved. 
+
+
+
+# Part 3: Cluster Characterisation and Conclusion
+From the dendrogram plots and silhouette analysis above, in addition to the accuracy improvements of the logistic model upon adding both the k-means and hierarchical cluster, we can be confident that our generated clusters do describe the structure of our data correctly. 
+A more difficult point of enquiry however is the interpretation and understanding of what each cluster represents. Using plots like the interactive plot given in the k-means clustering method above, we can see that some clusters are more heavily weighted in one energy type than others and are underweighted compared to others in some other types. For example, in the case of the interactive plot above, to repeat we see that cluster 5 has a relatively high solar power and thermal; cluster 2 has a higher geothermal and relatively low small hydro; cluster 1 has a high small hydro; cluster 4 has a higher biomass; cluster 3 also has a high wind total and a low geothermal. 
+
+The more even distribution of the K-means clustering method suggests a more fine grain separation of the data, providing more nuanced (or more complicated) segmentation of data between clusters. Looking at its distribution above, the hierarchical clustering method puts the vast majority of observations into clusters 1 and 4, which could allow for a simpler interpretation of these clusters by focusing only on these two or encourage digging deeper into what makes the other three cluster exceptional.  
+
+Conclusions
+The clustering of our data concerning renewable energy type production levels into clusters can direct further analysis that can inform policymakers, energy production companies and energy planners. 
+
+The complexity of understanding clustering energy production types means that insights for marketing is limited due to the difficulty in conveying the meaning of technical output in an accessible way. However, there could be insights for financing energy production, by limiting the vast number of observations to only the high average production clusters and dismissing the further analysis of low average production clusters. This is a time saving approach for time-poor financiers and energy planners making time pressured decisions. 
+
+In the case of researchers and energy planners, considering clusters with a high average of one energy type production and low averages of other energy types, can lead to a better understanding of complementary energy types and complementary geographies and locations for different energy types by looking at the locations of the high average clusters. For example, if there is a high average production of wind energy in one cluster, we could look to the location of wind plants in this cluster to direct building of new wind farms. Or, in the case of a cluster with high average geothermal but low solar production, this would suggest geothermal and solar are non-complementary energy types and so production of geothermal plants in high solar producing locations would be discouraged.
